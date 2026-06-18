@@ -1,10 +1,10 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
 namespace Azunt.ReasonManagement
 {
     /// <summary>
-    /// 테이블과 일대일로 매핑되는 모델 클래스: Reason, ReasonObject, ...
+    /// Reasons 테이블과 일대일로 매핑되는 모델 클래스입니다.
     /// </summary>
     [Table("Reasons")]
     public class Reason
@@ -32,8 +32,13 @@ namespace Azunt.ReasonManagement
         public string? CreatedBy { get; set; }
 
         /// <summary>
-        /// 이용 사유
+        /// 이용 사유 이름 또는 제목
         /// </summary>
         public string? Name { get; set; }
+
+        /// <summary>
+        /// 이용 사유 상세 내용
+        /// </summary>
+        public string? Content { get; set; }
     }
 }

@@ -1,12 +1,14 @@
-﻿using Microsoft.Data.SqlClient;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using System;
-using System.Collections.Generic;
 
 namespace Azunt.ReasonManagement;
 
+/// <summary>
+/// SQL Server 환경에서 Reasons 테이블을 생성하거나 누락된 컬럼을 보정하는 도우미 클래스입니다.
+/// EF Core In-Memory 테스트 모드에서는 이 클래스를 실행하지 않아도 됩니다.
+/// </summary>
 public class ReasonsTableBuilder
 {
     private readonly string _masterConnectionString;
@@ -27,11 +29,11 @@ public class ReasonsTableBuilder
             try
             {
                 EnsureReasonsTable(connStr);
-                _logger.LogInformation($"Reasons table processed (tenant DB): {connStr}");
+                _logger.LogInformation("Reasons table processed (tenant DB): {ConnectionString}", connStr);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, $"[{connStr}] Error processing tenant DB");
+                _logger.LogError(ex, "[{ConnectionString}] Error processing tenant DB", connStr);
             }
         }
     }
@@ -53,21 +55,19 @@ public class ReasonsTableBuilder
     {
         var result = new List<string>();
 
-        using (var connection = new SqlConnection(_masterConnectionString))
-        {
-            connection.Open();
-            var cmd = new SqlCommand("SELECT ConnectionString FROM dbo.Tenants", connection);
+        using var connection = new SqlConnection(_masterConnectionString);
+        connection.Open();
 
-            using (var reader = cmd.ExecuteReader())
+        using var cmd = new SqlCommand("SELECT ConnectionString FROM dbo.Tenants", connection);
+        using var reader = cmd.ExecuteReader();
+
+        while (reader.Read())
+        {
+            var connectionString = reader["ConnectionString"]?.ToString();
+
+            if (!string.IsNullOrWhiteSpace(connectionString))
             {
-                while (reader.Read())
-                {
-                    var connectionString = reader["ConnectionString"]?.ToString();
-                    if (!string.IsNullOrEmpty(connectionString))
-                    {
-                        result.Add(connectionString);
-                    }
-                }
+                result.Add(connectionString);
             }
         }
 
@@ -76,78 +76,84 @@ public class ReasonsTableBuilder
 
     private void EnsureReasonsTable(string connectionString)
     {
-        using (var connection = new SqlConnection(connectionString))
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
+
+        using var cmdCheck = new SqlCommand(@"
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'Reasons'", connection);
+
+        var tableCount = (int)cmdCheck.ExecuteScalar();
+
+        if (tableCount == 0)
         {
-            connection.Open();
+            using var cmdCreate = new SqlCommand(@"
+                CREATE TABLE [dbo].[Reasons] (
+                    [Id] BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
+                    [Active] BIT DEFAULT ((1)) NULL,
+                    [CreatedAt] DATETIMEOFFSET NULL DEFAULT SYSDATETIMEOFFSET(),
+                    [CreatedBy] NVARCHAR(255) NULL,
+                    [Name] NVARCHAR(MAX) NULL,
+                    [Content] NVARCHAR(MAX) NULL
+                )", connection);
 
-            var cmdCheck = new SqlCommand(@"
-                SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_NAME = 'Reasons'", connection);
-
-            int tableCount = (int)cmdCheck.ExecuteScalar();
-
-            if (tableCount == 0)
+            cmdCreate.ExecuteNonQuery();
+            _logger.LogInformation("Reasons table created.");
+        }
+        else
+        {
+            var expectedColumns = new Dictionary<string, string>
             {
-                var cmdCreate = new SqlCommand(@"
-                    CREATE TABLE [dbo].[Reasons] (
-                        [Id] BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
-                        [Active] BIT DEFAULT ((1)) NOT NULL,
-                        [CreatedAt] DATETIMEOFFSET(7) NOT NULL,
-                        [CreatedBy] NVARCHAR(255) NULL,
-                        [Name] NVARCHAR(MAX) NULL
-                    )", connection);
+                ["Active"] = "BIT",
+                ["CreatedAt"] = "DATETIMEOFFSET",
+                ["CreatedBy"] = "NVARCHAR(255)",
+                ["Name"] = "NVARCHAR(MAX)",
+                ["Content"] = "NVARCHAR(MAX)"
+            };
 
-                cmdCreate.ExecuteNonQuery();
-
-                _logger.LogInformation("Reasons table created.");
-            }
-            else
+            foreach (var kvp in expectedColumns)
             {
-                var expectedColumns = new Dictionary<string, string>
-                {
-                    ["Active"] = "BIT",
-                    ["CreatedAt"] = "DATETIMEOFFSET(7)",
-                    ["CreatedBy"] = "NVARCHAR(255)",
-                    ["Name"] = "NVARCHAR(MAX)"
-                };
-
-                foreach (var kvp in expectedColumns)
-                {
-                    var columnName = kvp.Key;
-
-                    var cmdColumnCheck = new SqlCommand(@"
-                        SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
-                        WHERE TABLE_NAME = 'Reasons' AND COLUMN_NAME = @ColumnName", connection);
-                    cmdColumnCheck.Parameters.AddWithValue("@ColumnName", columnName);
-
-                    int colExists = (int)cmdColumnCheck.ExecuteScalar();
-
-                    if (colExists == 0)
-                    {
-                        var alterCmd = new SqlCommand(
-                            $"ALTER TABLE [dbo].[Reasons] ADD [{columnName}] {kvp.Value} NULL", connection);
-                        alterCmd.ExecuteNonQuery();
-
-                        _logger.LogInformation($"Column added: {columnName} ({kvp.Value})");
-                    }
-                }
-            }
-
-            var cmdCountRows = new SqlCommand("SELECT COUNT(*) FROM [dbo].[Reasons]", connection);
-            int rowCount = (int)cmdCountRows.ExecuteScalar();
-
-            if (rowCount == 0)
-            {
-                var cmdInsertDefaults = new SqlCommand(@"
-                    INSERT INTO [dbo].[Reasons] (Active, CreatedAt, CreatedBy, Name)
-                    VALUES
-                        (1, SYSDATETIMEOFFSET(), 'System', 'Initial Reason 1'),
-                        (1, SYSDATETIMEOFFSET(), 'System', 'Initial Reason 2')", connection);
-
-                int inserted = cmdInsertDefaults.ExecuteNonQuery();
-                _logger.LogInformation($"Reasons 기본 데이터 {inserted}건 삽입 완료");
+                EnsureColumn(connection, kvp.Key, kvp.Value);
             }
         }
+
+        using var cmdCountRows = new SqlCommand("SELECT COUNT(*) FROM [dbo].[Reasons]", connection);
+        var rowCount = (int)cmdCountRows.ExecuteScalar();
+
+        if (rowCount == 0)
+        {
+            using var cmdInsertDefaults = new SqlCommand(@"
+                INSERT INTO [dbo].[Reasons] (Active, CreatedAt, CreatedBy, Name, Content)
+                VALUES
+                    (1, SYSDATETIMEOFFSET(), 'System', 'Initial Reason 1', 'Initial reason content 1'),
+                    (1, SYSDATETIMEOFFSET(), 'System', 'Initial Reason 2', 'Initial reason content 2')", connection);
+
+            var inserted = cmdInsertDefaults.ExecuteNonQuery();
+            _logger.LogInformation("Reasons 기본 데이터 {Count}건 삽입 완료", inserted);
+        }
+    }
+
+    private void EnsureColumn(SqlConnection connection, string columnName, string columnType)
+    {
+        using var cmdColumnCheck = new SqlCommand(@"
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'dbo'
+              AND TABLE_NAME = 'Reasons'
+              AND COLUMN_NAME = @ColumnName", connection);
+
+        cmdColumnCheck.Parameters.AddWithValue("@ColumnName", columnName);
+        var colExists = (int)cmdColumnCheck.ExecuteScalar();
+
+        if (colExists > 0)
+        {
+            return;
+        }
+
+        using var alterCmd = new SqlCommand(
+            $"ALTER TABLE [dbo].[Reasons] ADD [{columnName}] {columnType} NULL", connection);
+
+        alterCmd.ExecuteNonQuery();
+        _logger.LogInformation("Column added: {ColumnName} ({ColumnType})", columnName, columnType);
     }
 
     public static void Run(IServiceProvider services, bool forMaster)
@@ -158,7 +164,7 @@ public class ReasonsTableBuilder
             var config = services.GetRequiredService<IConfiguration>();
             var masterConnectionString = config.GetConnectionString("DefaultConnection");
 
-            if (string.IsNullOrEmpty(masterConnectionString))
+            if (string.IsNullOrWhiteSpace(masterConnectionString))
             {
                 throw new InvalidOperationException("DefaultConnection is not configured in appsettings.json.");
             }

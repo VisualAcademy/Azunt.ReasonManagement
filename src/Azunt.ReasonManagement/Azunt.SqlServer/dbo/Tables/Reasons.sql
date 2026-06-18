@@ -1,4 +1,4 @@
-﻿CREATE TABLE [dbo].[Reasons]
+CREATE TABLE [dbo].[Reasons]
 (
     [Id]        BIGINT             IDENTITY (1, 1) NOT NULL PRIMARY KEY,    -- 이용 사유 고유 아이디, 자동 증가
     [Active]    BIT                DEFAULT ((1)) NULL,                      -- 활성 상태 표시, 기본값 1 (활성)

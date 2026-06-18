@@ -1,0 +1,25 @@
+@using Azunt.ReasonManagement
+@inject IReasonRepository RepositoryReference
+
+<select class="form-select" @bind="SelectedValue">
+    <option value="">-- Select Reason --</option>
+    @foreach (var reason in reasons)
+    {
+        <option value="@reason.Name">@reason.Name</option>
+    }
+</select>
+
+@code {
+    private List<Reason> reasons = new();
+
+    [Parameter]
+    public string? SelectedValue { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> SelectedValueChanged { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        reasons = await RepositoryReference.GetAllAsync();
+    }
+}

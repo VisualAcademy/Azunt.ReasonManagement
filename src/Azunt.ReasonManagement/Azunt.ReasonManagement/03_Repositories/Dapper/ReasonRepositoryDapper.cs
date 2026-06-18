@@ -1,7 +1,6 @@
-﻿using Dapper;
+using Dapper;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
-using Dul.Articles;
 
 namespace Azunt.ReasonManagement;
 
@@ -23,38 +22,44 @@ public class ReasonRepositoryDapper : IReasonRepository
 
     public async Task<Reason> AddAsync(Reason model, string? connectionString = null)
     {
-        var conn = GetConnection(connectionString);
-        var sql = @"INSERT INTO Reasons (Active, CreatedAt, CreatedBy, Name)
-                    OUTPUT INSERTED.Id
-                    VALUES (@Active, @CreatedAt, @CreatedBy, @Name)";
+        await using var conn = GetConnection(connectionString);
 
-        model.CreatedAt = DateTimeOffset.UtcNow;
+        var sql = @"INSERT INTO Reasons (Active, CreatedAt, CreatedBy, Name, Content)
+                    OUTPUT INSERTED.Id
+                    VALUES (@Active, @CreatedAt, @CreatedBy, @Name, @Content)";
+
+        model.Active ??= true;
+        model.CreatedAt = model.CreatedAt == default ? DateTimeOffset.UtcNow : model.CreatedAt;
         model.Id = await conn.ExecuteScalarAsync<long>(sql, model);
         return model;
     }
 
     public async Task<List<Reason>> GetAllAsync(string? connectionString = null)
     {
-        var conn = GetConnection(connectionString);
-        var sql = "SELECT Id, Active, CreatedAt, CreatedBy, Name FROM Reasons ORDER BY Id DESC";
+        await using var conn = GetConnection(connectionString);
+
+        var sql = "SELECT Id, Active, CreatedAt, CreatedBy, Name, Content FROM Reasons ORDER BY Id DESC";
         var list = await conn.QueryAsync<Reason>(sql);
         return list.ToList();
     }
 
     public async Task<Reason> GetByIdAsync(long id, string? connectionString = null)
     {
-        var conn = GetConnection(connectionString);
-        var sql = "SELECT Id, Active, CreatedAt, CreatedBy, Name FROM Reasons WHERE Id = @Id";
+        await using var conn = GetConnection(connectionString);
+
+        var sql = "SELECT Id, Active, CreatedAt, CreatedBy, Name, Content FROM Reasons WHERE Id = @Id";
         var model = await conn.QuerySingleOrDefaultAsync<Reason>(sql, new { Id = id });
         return model ?? new Reason();
     }
 
     public async Task<bool> UpdateAsync(Reason model, string? connectionString = null)
     {
-        var conn = GetConnection(connectionString);
+        await using var conn = GetConnection(connectionString);
+
         var sql = @"UPDATE Reasons SET
                         Active = @Active,
-                        Name = @Name
+                        Name = @Name,
+                        Content = @Content
                     WHERE Id = @Id";
 
         var rows = await conn.ExecuteAsync(sql, model);
@@ -63,21 +68,27 @@ public class ReasonRepositoryDapper : IReasonRepository
 
     public async Task<bool> DeleteAsync(long id, string? connectionString = null)
     {
-        var conn = GetConnection(connectionString);
+        await using var conn = GetConnection(connectionString);
+
         var sql = "DELETE FROM Reasons WHERE Id = @Id";
         var rows = await conn.ExecuteAsync(sql, new { Id = id });
         return rows > 0;
     }
 
     public async Task<ArticleSet<Reason, int>> GetArticlesAsync<TParentIdentifier>(
-        int pageIndex, int pageSize, string searchField, string searchQuery, string sortOrder, TParentIdentifier parentIdentifier, string? connectionString = null)
+        int pageIndex,
+        int pageSize,
+        string searchField,
+        string searchQuery,
+        string sortOrder,
+        TParentIdentifier parentIdentifier,
+        string? connectionString = null)
     {
         var all = await GetAllAsync(connectionString);
-        var filtered = string.IsNullOrWhiteSpace(searchQuery)
-            ? all
-            : all.Where(m => m.Name != null && m.Name.Contains(searchQuery)).ToList();
+        var filtered = ApplySearch(all, searchField, searchQuery);
+        var sorted = ApplySort(filtered, sortOrder);
 
-        var paged = filtered
+        var paged = sorted
             .Skip(pageIndex * pageSize)
             .Take(pageSize)
             .ToList();
@@ -86,19 +97,54 @@ public class ReasonRepositoryDapper : IReasonRepository
     }
 
     public async Task<ArticleSet<Reason, long>> GetByAsync<TParentIdentifier>(
-        FilterOptions<TParentIdentifier> options, string? connectionString = null)
+        FilterOptions<TParentIdentifier> options,
+        string? connectionString = null)
     {
         var all = await GetAllAsync(connectionString);
-        var filtered = all
-            .Where(m => string.IsNullOrWhiteSpace(options.SearchQuery) ||
-                        (m.Name != null && m.Name.Contains(options.SearchQuery)))
-            .ToList();
+        var filtered = ApplySearch(all, options.SearchField, options.SearchQuery);
+        var sorted = ApplySort(filtered, options.SortOrder);
 
-        var paged = filtered
+        var paged = sorted
             .Skip(options.PageIndex * options.PageSize)
             .Take(options.PageSize)
             .ToList();
 
         return new ArticleSet<Reason, long>(paged, filtered.Count);
+    }
+
+    private static List<Reason> ApplySearch(IEnumerable<Reason> source, string? searchField, string? searchQuery)
+    {
+        if (string.IsNullOrWhiteSpace(searchQuery))
+        {
+            return source.ToList();
+        }
+
+        var keyword = searchQuery.Trim();
+        var field = searchField?.Trim().ToLowerInvariant();
+
+        return field switch
+        {
+            "name" => source.Where(m => m.Name != null && m.Name.Contains(keyword)).ToList(),
+            "content" => source.Where(m => m.Content != null && m.Content.Contains(keyword)).ToList(),
+            _ => source.Where(m =>
+                (m.Name != null && m.Name.Contains(keyword)) ||
+                (m.Content != null && m.Content.Contains(keyword))).ToList()
+        };
+    }
+
+    private static IEnumerable<Reason> ApplySort(IEnumerable<Reason> source, string? sortOrder)
+    {
+        return sortOrder switch
+        {
+            "Name" => source.OrderBy(m => m.Name),
+            "NameDesc" => source.OrderByDescending(m => m.Name),
+            "Content" => source.OrderBy(m => m.Content),
+            "ContentDesc" => source.OrderByDescending(m => m.Content),
+            "CreatedAt" => source.OrderBy(m => m.CreatedAt),
+            "CreatedAtDesc" => source.OrderByDescending(m => m.CreatedAt),
+            "Active" => source.OrderBy(m => m.Active),
+            "ActiveDesc" => source.OrderByDescending(m => m.Active),
+            _ => source.OrderByDescending(m => m.Id)
+        };
     }
 }
