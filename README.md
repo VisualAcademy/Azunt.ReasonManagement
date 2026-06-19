@@ -87,3 +87,13 @@ Dapper 또는 ADO.NET 모드도 같은 연결 문자열을 전달하여 사용�
 - Blazor Server의 `InteractiveServer` 렌더링만 사용합니다.
 - WebAssembly/Webcil 변환 경로에서 발생할 수 있는 `tmp-webcil` 관련 오류를 피하기 위해 `Microsoft.AspNetCore.Components.WebAssembly.Server` 참조와 `AddInteractiveWebAssemblyComponents()` 설정을 제거했습니다.
 - `Azunt.Web`은 `Azunt.ReasonManagement` 프로젝트를 직접 참조하여 NuGet 게시 전 로컬 테스트가 가능하고, 최종 게시 후에는 Project Reference를 Package Reference로 교체해 테스트할 수 있습니다.
+
+## Single Tenant and Multi Tenant Test Pages
+
+The Azunt.Web test project includes two Reason management pages:
+
+- `/Reasons`: single-tenant test page using the default registered repository.
+- `/ReasonsByTenant`: multi-tenant style test page that reads the current tenant connection string from `IUserService.GetUserNotCached().Tenant.ConnectionString`.
+
+For local testing, `InMemoryUserService` returns `InMemory:AzuntReasonTenantDb`, so the tenant page can run without SQL Server. In a real multi-tenant environment, replace the test `IUserService` with the application service that resolves the tenant SQL Server connection string from the current user or tenant table.
+
